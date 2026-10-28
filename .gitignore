@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
+*.env
+*.egg-info/
+dist/
+build/
+
+# SQLite (local dev only — never commit production DB)
+*.db
+*.sqlite
+*.sqlite3
+
+# Flask uploads (local dev only)
+backend/uploads/
+uploads/
+
+# Test infrastructure files
+frontend/test_modals_interactive.js
+frontend/test_viewports.js
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# Environment secrets
+.env.local
+.env.production
+.env.*.local
+backend/.env
+frontend/.env.local
+frontend/.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage

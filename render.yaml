@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: civicfix-api
+    env: python
+    region: singapore   # choose closest to your users
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    healthCheckPath: /api/health
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true          # Render auto-generates a secure value
+      - key: DATABASE_URL
+        fromDatabase:
+          name: civicfix-db          # create a PostgreSQL DB named civicfix-db in Render
+          property: connectionString
+      - key: ALLOWED_ORIGIN
+        value: https://civicfix.vercel.app   # update after Vercel deploy
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        value: 10000
