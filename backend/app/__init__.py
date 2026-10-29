@@ -62,6 +62,12 @@ def create_app():
     try:
         init_db()
         logger.info("Database schema verified/initialised.")
+        try:
+            from seed_data import seed_database
+            seed_database(force_reset=False)
+            logger.info("Database initial seed verified/completed.")
+        except Exception as seed_exc:
+            logger.warning(f"Database auto-seed check skipped: {seed_exc}")
     except Exception as exc:
         logger.error(f"Database initialisation failed: {exc}")
         raise

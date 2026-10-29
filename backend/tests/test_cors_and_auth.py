@@ -282,3 +282,15 @@ class TestVaryHeader:
         )
         vary = resp.headers.get("Vary", "")
         assert "Origin" in vary, f"'Origin' not in Vary header on 401: {vary!r}"
+
+
+# ── Seed Demo Endpoint tests ────────────────────────────────────────────────
+
+class TestSeedDemoEndpoint:
+    """POST /api/admin/seed-demo is safe, idempotent, and returns 200."""
+
+    def test_seed_demo_idempotent_when_already_seeded(self, client):
+        resp = client.post("/api/admin/seed-demo", headers={"Origin": PROD_ORIGIN})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data.get("status") == "ok"

@@ -262,3 +262,13 @@ def mark_notifications_read():
         """, (user["id"],))
         marked_count = cursor.rowcount
         return jsonify({"message": "All notifications marked as read.", "marked_count": marked_count, "unread_count": 0}), 200
+
+@admin_bp.route("/seed-demo", methods=["POST"])
+def trigger_seed_demo():
+    """Trigger safe demo seeding if database is empty (idempotent, never resets)."""
+    try:
+        from seed_data import seed_database
+        seed_database(force_reset=False)
+        return jsonify({"status": "ok", "message": "Demo data checked/seeded safely."}), 200
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
