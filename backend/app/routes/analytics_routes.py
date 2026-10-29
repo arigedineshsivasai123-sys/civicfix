@@ -154,7 +154,7 @@ def get_department_workload():
             FROM departments d
             LEFT JOIN grievances g ON d.id = g.department_id
             LEFT JOIN users u ON d.id = u.department_id AND u.role = 'officer'
-            GROUP BY d.id
+            GROUP BY d.id, d.name, d.code
             ORDER BY active_cases DESC
         """)
         rows = [dict(r) for r in cursor.fetchall()]

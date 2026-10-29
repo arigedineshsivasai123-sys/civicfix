@@ -30,7 +30,7 @@ def list_users():
             query += " AND u.department_id = ?"
             params.append(int(dept_id))
 
-        query += " GROUP BY u.id ORDER BY u.role, u.name"
+        query += " GROUP BY u.id, u.name, u.email, u.role, u.department_id, u.badge_number, u.created_at, d.name, d.code ORDER BY u.role, u.name"
         cursor.execute(query, params)
         users = [dict(r) for r in cursor.fetchall()]
         return jsonify({"users": users}), 200
