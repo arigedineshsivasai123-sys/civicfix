@@ -89,8 +89,9 @@ class _PgCursorWrapper:
         translated = self._translate(sql)
         stripped = translated.strip().upper()
 
-        # Auto-append RETURNING id for plain INSERT statements so lastrowid works
-        if stripped.startswith("INSERT") and "RETURNING" not in stripped:
+        # Auto-append RETURNING id for plain INSERT statements so lastrowid works,
+        # unless the target table doesn't have an id column (e.g. sessions with token PK)
+        if stripped.startswith("INSERT") and "RETURNING" not in stripped and "INTO SESSIONS" not in stripped:
             translated = translated.rstrip().rstrip(";") + " RETURNING id"
             self._cur.execute(translated, params or ())
             row = self._cur.fetchone()
@@ -372,6 +373,15 @@ def init_db():
                 CHECK(file_purpose IN ('citizen_evidence','resolution_proof')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (uploader_id) REFERENCES users(id)
+        )""")
+
+        # ── 9. Sessions (cross-worker token storage) ────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL
         )""")
 
         # ── Safe column migrations (for existing databases) ─────────

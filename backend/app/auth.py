@@ -131,8 +131,17 @@ def _lookup_session(token: str):
             row = cur.fetchone()
             if not row:
                 return None
-            exp_str = row["expires_at"]
-            exp = datetime.fromisoformat(str(exp_str)) if exp_str else None
+            exp_val = row["expires_at"]
+            if isinstance(exp_val, datetime):
+                exp = exp_val
+            elif exp_val:
+                try:
+                    exp = datetime.fromisoformat(str(exp_val))
+                except Exception:
+                    exp = None
+            else:
+                exp = None
+
             if exp:
                 if exp.tzinfo is None:
                     exp = exp.replace(tzinfo=timezone.utc)
