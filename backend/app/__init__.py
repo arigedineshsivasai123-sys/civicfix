@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask, send_from_directory, jsonify
+from flask import Flask, request, send_from_directory, jsonify
 from flask_cors import CORS
 from app.database import init_db
 
@@ -28,16 +28,35 @@ def create_app():
 
     # ── CORS ─────────────────────────────────────────────────────────
     # In production set ALLOWED_ORIGIN to the exact Vercel URL, e.g.:
-    #   https://civicfix.vercel.app
+    #   https://civicfix-ss9ng.vercel.app
     # In local dev it defaults to the Vite dev server.
     allowed_origin = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
+    _cors_origins = [allowed_origin, "http://localhost:5173", "http://127.0.0.1:5173"]
+
     CORS(
         app,
-        origins=[allowed_origin, "http://localhost:5173", "http://127.0.0.1:5173"],
+        origins=_cors_origins,
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization", "X-Session-Token"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
+
+    # ── CORS safety net ──────────────────────────────────────────────
+    # Flask-CORS handles the standard cases, but this after_request hook
+    # ensures CORS headers are present on ALL responses (including error
+    # responses from blueprints that Flask-CORS might miss) without ever
+    # setting a wildcard on credentialed requests.
+    @app.after_request
+    def add_cors_headers(response):
+        origin = request.headers.get("Origin", "")
+        if origin in _cors_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            # Tell caches that responses differ per Origin
+            vary = response.headers.get("Vary", "")
+            if "Origin" not in vary:
+                response.headers["Vary"] = (vary + ", Origin").lstrip(", ")
+        return response
 
     # ── Database schema (idempotent — safe to call on every start) ───
     try:
