@@ -55,18 +55,30 @@ print(f"  Response body: {body[:200]}\n")
 
 # ── 2. CORS OPTIONS preflight ────────────────────────────────────────────────
 print("-- CORS preflight ------------------------------------------------")
-sc, hdrs, body = req("OPTIONS", "/api/auth/login", headers={
+sc, hdrs, body = req("OPTIONS", "/api/analytics/overview", headers={
     "Origin": VERCEL_ORIGIN,
-    "Access-Control-Request-Method": "POST",
-    "Access-Control-Request-Headers": "Content-Type,Authorization",
+    "Access-Control-Request-Method": "GET",
+    "Access-Control-Request-Headers": "Authorization,Content-Type,Accept",
 })
 acao = hdrs.get("Access-Control-Allow-Origin") or hdrs.get("access-control-allow-origin", "")
 acac = hdrs.get("Access-Control-Allow-Credentials") or hdrs.get("access-control-allow-credentials", "")
+acah = hdrs.get("Access-Control-Allow-Headers") or hdrs.get("access-control-allow-headers", "")
 vary = hdrs.get("Vary") or hdrs.get("vary", "")
-all_pass &= check("OPTIONS /api/auth/login → 200", sc == 200, f"got {sc}")
+all_pass &= check("OPTIONS /api/analytics/overview with Accept header → 200", sc == 200, f"got {sc}")
 all_pass &= check(f"ACAO == '{VERCEL_ORIGIN}'", acao == VERCEL_ORIGIN, acao)
 all_pass &= check("ACAC == 'true'", acac.lower() == "true", acac)
+all_pass &= check("Allow-Headers includes Accept", "Accept" in acah or "accept" in acah.lower(), acah)
 all_pass &= check("Vary contains Origin", "Origin" in vary, vary)
+
+# Vercel preview branch domain preflight
+preview_origin = "https://civicfix-feat-preview.vercel.app"
+sc_prev, hdrs_prev, _ = req("OPTIONS", "/api/grievances", headers={
+    "Origin": preview_origin,
+    "Access-Control-Request-Method": "GET",
+    "Access-Control-Request-Headers": "Authorization,Content-Type,Accept",
+})
+acao_prev = hdrs_prev.get("Access-Control-Allow-Origin") or hdrs_prev.get("access-control-allow-origin", "")
+all_pass &= check(f"OPTIONS from Vercel preview branch: ACAO == '{preview_origin}'", acao_prev == preview_origin, acao_prev)
 
 # Disallowed origin should not get ACAO
 sc2, hdrs2, _ = req("OPTIONS", "/api/auth/login", headers={
@@ -98,12 +110,23 @@ token = login_data.get("token") or (login_data.get("user") or {}).get("token") o
 all_pass &= check("Login response contains token", bool(token), "token present" if token else "NO token")
 print(f"  Response body (truncated): {body[:300]}\n")
 
-# ── 4. Grievances — unauthenticated ─────────────────────────────────────────
-print("-- Grievances (unauthenticated) ----------------------------------")
-sc, hdrs, body = req("GET", "/api/grievances", headers={"Origin": VERCEL_ORIGIN})
+# ── 4. Grievances — public feed & unauthenticated ────────────────────────────
+print("-- Grievances (public feed & unauthenticated) ---------------------")
+sc, hdrs, body = req("GET", "/api/grievances/public-feed", headers={"Origin": VERCEL_ORIGIN})
 acao = hdrs.get("Access-Control-Allow-Origin") or hdrs.get("access-control-allow-origin", "")
-all_pass &= check("GET /api/grievances (no token) → 401", sc == 401, f"got {sc}")
-all_pass &= check("ACAO present on 401 (browser-readable)", acao == VERCEL_ORIGIN, acao)
+all_pass &= check("GET /api/grievances/public-feed → 200", sc == 200, f"got {sc}")
+all_pass &= check("ACAO present on public feed", acao == VERCEL_ORIGIN, acao)
+try:
+    feed = json.loads(body)
+    feed_count = len(feed.get("grievances", []))
+    all_pass &= check("Public feed contains grievances", feed_count > 0, f"{feed_count} items")
+except Exception as e:
+    all_pass &= check("Public feed valid JSON", False, str(e))
+
+sc_unauth, hdrs_unauth, _ = req("GET", "/api/grievances", headers={"Origin": VERCEL_ORIGIN})
+acao_unauth = hdrs_unauth.get("Access-Control-Allow-Origin") or hdrs_unauth.get("access-control-allow-origin", "")
+all_pass &= check("GET /api/grievances (no token) → 401", sc_unauth == 401, f"got {sc_unauth}")
+all_pass &= check("ACAO present on 401 (browser-readable)", acao_unauth == VERCEL_ORIGIN, acao_unauth)
 print()
 
 # ── 5. Grievances — authenticated ────────────────────────────────────────────
