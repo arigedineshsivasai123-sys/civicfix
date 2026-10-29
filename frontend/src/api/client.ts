@@ -38,8 +38,13 @@ export const clearStoredAuth = () => {
 };
 
 // In production (Vercel), VITE_API_URL points to the Render backend.
-// In local dev with Vite proxy, it is empty so requests go through /api proxy.
-const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+// In production builds, default to the production Render URL if VITE_API_URL was omitted.
+// In local dev with Vite proxy, it is empty so requests go through the Vite /api proxy.
+const PRODUCTION_BACKEND_URL = 'https://civicfix-v1pn.onrender.com';
+const API_BASE = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? PRODUCTION_BACKEND_URL : '')
+).replace(/\/$/, '');
 
 async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
@@ -61,15 +66,42 @@ async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise
   // Prepend backend base URL only when set (production); otherwise use Vite proxy path
   const url = API_BASE ? `${API_BASE}${endpoint}` : endpoint;
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: options.credentials || 'include',
+    });
+  } catch (fetchErr: any) {
+    const rawMsg = fetchErr?.message || String(fetchErr);
+    if (rawMsg.includes('Failed to fetch') || fetchErr?.name === 'TypeError') {
+      throw new Error(
+        `Unable to reach CivicFix backend at ${url}. Check your internet connection and verify the backend is online.`
+      );
+    }
+    throw new Error(`Network error while requesting ${url}: ${rawMsg}`);
+  }
+
+  // Guard against HTML error pages or SPA index.html rewrites returned by static hosts
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      throw new Error(
+        `Server returned error HTTP ${response.status} from ${endpoint}. ${text.slice(0, 120)}`
+      );
+    }
+    throw new Error(
+      `Received unexpected non-JSON response from ${url} (HTTP ${response.status}). The API server at this address is not responding with JSON.`
+    );
+  }
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || `HTTP error! status: ${response.status}`);
+    const errMsg = data.error || data.message || `HTTP error! status: ${response.status}`;
+    throw new Error(errMsg);
   }
 
   return data as T;
@@ -144,6 +176,11 @@ export const api = {
     return apiFetch(`/api/grievances/${encodeURIComponent(caseId)}/support`, {
       method: 'POST',
     });
+  },
+
+  async getPublicFeed(): Promise<Grievance[]> {
+    const res = await apiFetch<{ grievances: Grievance[] }>('/api/grievances/public-feed');
+    return res.grievances;
   },
 
   async listGrievances(filters: {

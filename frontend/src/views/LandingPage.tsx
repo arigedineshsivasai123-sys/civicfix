@@ -36,12 +36,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Unauthenticated landing page uses public feed; logged-in users use listGrievances
+    const fetchCases = api.getPublicFeed().catch(() => []);
     Promise.all([
-      api.getAnalyticsOverview(),
-      api.listGrievances(),
+      api.getAnalyticsOverview().catch(() => null),
+      fetchCases,
     ])
       .then(([overview, cases]) => {
-        setStats(overview);
+        if (overview) setStats(overview);
         setFeaturedCases(cases.slice(0, 4));
       })
       .catch(() => {})

@@ -81,6 +81,37 @@ class TestPreflightAllowedOrigin:
         )
         assert resp.status_code == 200, resp.get_data(as_text=True)
 
+    def test_preflight_with_accept_header(self, client):
+        """Preflight requesting 'Accept' header must be allowed (browsers send Accept)."""
+        resp = client.options(
+            "/api/analytics/overview",
+            headers={
+                "Origin": PROD_ORIGIN,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization,Content-Type,Accept",
+            },
+        )
+        assert resp.status_code == 200
+        acao = resp.headers.get("Access-Control-Allow-Origin", "")
+        assert acao == PROD_ORIGIN, f"Expected ACAO={PROD_ORIGIN!r}, got {acao!r}"
+        allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+        assert "Accept" in allow_headers or "accept" in allow_headers.lower()
+
+    def test_vercel_preview_domain_preflight(self, client):
+        """Vercel preview deploy URLs (e.g. civicfix-git-branch.vercel.app) must be allowed."""
+        preview_origin = "https://civicfix-feat-update.vercel.app"
+        resp = client.options(
+            "/api/grievances",
+            headers={
+                "Origin": preview_origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization,Content-Type,Accept",
+            },
+        )
+        assert resp.status_code == 200
+        acao = resp.headers.get("Access-Control-Allow-Origin", "")
+        assert acao == preview_origin, f"Expected ACAO={preview_origin!r}, got {acao!r}"
+
     def test_login_preflight_acao_header(self, client):
         resp = client.options(
             "/api/auth/login",
@@ -175,6 +206,19 @@ class TestActualRequestCors:
             f"401 response missing ACAO={PROD_ORIGIN!r}; browser cannot read it. "
             f"Got: {acao!r}"
         )
+
+    def test_public_feed_unauthenticated_returns_200_with_acao(self, client):
+        """Public landing page feed must succeed without authentication and have ACAO."""
+        resp = client.get(
+            "/api/grievances/public-feed",
+            headers={"Origin": PROD_ORIGIN},
+        )
+        assert resp.status_code == 200
+        acao = resp.headers.get("Access-Control-Allow-Origin", "")
+        assert acao == PROD_ORIGIN
+        data = resp.get_json()
+        assert "grievances" in data
+        assert isinstance(data["grievances"], list)
 
     def test_grievances_authenticated_returns_200_with_acao(self, client, auth_token):
         resp = client.get(

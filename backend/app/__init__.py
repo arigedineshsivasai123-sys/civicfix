@@ -27,32 +27,70 @@ def create_app():
     app.config["SECRET_KEY"] = secret
 
     # ── CORS ─────────────────────────────────────────────────────────
-    # In production set ALLOWED_ORIGIN to the exact Vercel URL, e.g.:
-    #   https://civicfix-ss9ng.vercel.app
-    # In local dev it defaults to the Vite dev server.
-    allowed_origin = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
-    _cors_origins = [allowed_origin, "http://localhost:5173", "http://127.0.0.1:5173"]
+    # Support comma-separated ALLOWED_ORIGIN, strip trailing slashes,
+    # and include exact Vercel production domain, preview domains, and local dev.
+    import re
+
+    raw_origin = os.environ.get("ALLOWED_ORIGIN", "")
+    _explicit_origins = [o.strip().rstrip("/") for o in raw_origin.split(",") if o.strip()]
+
+    _default_origins = [
+        "https://civicfix-ss9ng.vercel.app",
+        "https://civicfix.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:4173",
+        "http://127.0.0.1:3000",
+    ]
+    for d in _default_origins:
+        if d not in _explicit_origins:
+            _explicit_origins.append(d)
+
+    _vercel_preview_re = re.compile(r"^https:\/\/civicfix(-[a-zA-Z0-9_-]+)?\.vercel\.app$")
+    _cors_origins = list(_explicit_origins) + [_vercel_preview_re]
+
+    def _is_origin_allowed(origin: str) -> bool:
+        if not origin:
+            return False
+        clean = origin.rstrip("/")
+        if clean in _explicit_origins:
+            return True
+        if _vercel_preview_re.match(clean):
+            return True
+        return False
+
+    _allowed_headers = [
+        "Content-Type",
+        "Authorization",
+        "X-Session-Token",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+    ]
+    _allowed_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
     CORS(
         app,
         origins=_cors_origins,
         supports_credentials=True,
-        allow_headers=["Content-Type", "Authorization", "X-Session-Token"],
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=_allowed_headers,
+        methods=_allowed_methods,
     )
 
     # ── CORS safety net ──────────────────────────────────────────────
-    # Flask-CORS handles the standard cases, but this after_request hook
-    # ensures CORS headers are present on ALL responses (including error
-    # responses from blueprints that Flask-CORS might miss) without ever
-    # setting a wildcard on credentialed requests.
+    # Flask-CORS handles standard routes, but this after_request hook
+    # guarantees that preflight OPTIONS, errors (401, 404, 500), and all
+    # blueprint responses always carry the complete set of required CORS headers.
     @app.after_request
     def add_cors_headers(response):
         origin = request.headers.get("Origin", "")
-        if origin in _cors_origins:
+        if _is_origin_allowed(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            # Tell caches that responses differ per Origin
+            response.headers["Access-Control-Allow-Headers"] = ", ".join(_allowed_headers)
+            response.headers["Access-Control-Allow-Methods"] = ", ".join(_allowed_methods)
             vary = response.headers.get("Vary", "")
             if "Origin" not in vary:
                 response.headers["Vary"] = (vary + ", Origin").lstrip(", ")

@@ -114,6 +114,23 @@ def track_case(case_id):
 
         return jsonify({"case": case}), 200
 
+# --- 1b. Public Feed (Sanitized recent cases for landing page & public explorer) ---
+@grievances_bp.route("/public-feed", methods=["GET"])
+def public_feed():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT g.id, g.case_id, g.title, g.description, g.category, g.locality,
+                   g.priority, g.status, g.submission_date, g.target_deadline,
+                   g.resolved_at, g.citizen_support_count,
+                   d.name as department_name, d.code as department_code
+            FROM grievances g
+            JOIN departments d ON g.department_id = d.id
+            ORDER BY g.submission_date DESC LIMIT 10
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify({"grievances": rows}), 200
+
 # --- 2. Check Duplicates Before Submission ---
 @grievances_bp.route("/check-duplicates", methods=["POST"])
 def check_duplicates():

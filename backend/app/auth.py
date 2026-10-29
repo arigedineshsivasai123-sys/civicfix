@@ -206,6 +206,8 @@ def get_current_user():
 def login_required(f):
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
+        if request.method == "OPTIONS":
+            return "", 200
         user = get_current_user()
         if not user:
             return jsonify({"error": "Authentication required. Please sign in."}), 401
@@ -218,6 +220,8 @@ def roles_required(*allowed_roles):
     def decorator(f):
         @functools.wraps(f)
         def decorated_function(*args, **kwargs):
+            if request.method == "OPTIONS":
+                return "", 200
             user = get_current_user()
             if not user:
                 return jsonify({"error": "Authentication required. Please sign in."}), 401
