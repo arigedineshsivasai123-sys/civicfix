@@ -145,6 +145,34 @@ if token:
         print(f"  Grievances returned: {count}")
     except Exception:
         print(f"  Response (truncated): {body[:200]}")
+    # ── 6. Grievance Submission & Tracking ──────────────────────────────────
+    print("-- Grievance Submission & Tracking --------------------------------")
+    submission_payload = {
+        "title": "Probe Automated Grievance Check",
+        "category": "Potholes & Asphalt Damage",
+        "locality": "Production Probe Sector",
+        "street_or_landmark": "Sensor Station 1",
+        "priority": "Medium",
+        "description": "Automated verification of grievance creation pipeline after database fix."
+    }
+    sc_sub, hdrs_sub, body_sub = req("POST", "/api/grievances", headers={
+        "Origin": VERCEL_ORIGIN,
+        "Authorization": f"Bearer {token}",
+    }, body=submission_payload)
+    all_pass &= check("POST /api/grievances → 201", sc_sub == 201, f"got {sc_sub}")
+    sub_data = {}
+    try:
+        sub_data = json.loads(body_sub)
+    except Exception:
+        pass
+    sub_case_id = sub_data.get("case_id", "")
+    all_pass &= check("Response contains valid case_id", bool(sub_case_id and sub_case_id.startswith("CF-")), sub_case_id)
+    all_pass &= check("Response contains tracking_id", sub_data.get("tracking_id") == sub_case_id, sub_data.get("tracking_id"))
+    all_pass &= check("Response contains numeric id", isinstance(sub_data.get("id"), int), str(sub_data.get("id")))
+
+    if sub_case_id:
+        sc_track, _, body_track = req("GET", f"/api/grievances/track/{sub_case_id}", headers={"Origin": VERCEL_ORIGIN})
+        all_pass &= check(f"Public track GET /api/grievances/track/{sub_case_id} → 200", sc_track == 200, f"got {sc_track}")
     print()
 
 # ── Summary ──────────────────────────────────────────────────────────────────

@@ -41,13 +41,15 @@ def record_audit(conn, case_id: str, actor_id: int, actor_name: str, actor_role:
 
 def create_notification(conn, user_id: int, case_id: str, title: str, message: str, notif_type: str = "info"):
     cursor = conn.cursor()
+    five_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
     # Deduplication check: prevent identical notification creation within 5 minutes or unread state
+    # Uses timestamp parameter instead of SQLite-specific datetime() function for cross-DB compatibility
     cursor.execute("""
         SELECT id FROM notifications
         WHERE user_id = ? AND case_id = ? AND title = ? AND message = ?
-        AND (is_read = 0 OR created_at >= datetime('now', '-5 minutes'))
+        AND (is_read = 0 OR created_at >= ?)
         LIMIT 1
-    """, (user_id, case_id, title, message))
+    """, (user_id, case_id, title, message, five_mins_ago))
     if cursor.fetchone():
         return  # Prevent duplicate notification creation
 
@@ -169,13 +171,13 @@ def check_duplicates():
 @login_required
 def create_grievance():
     user = g.current_user
-    data = request.form.to_dict() if request.form else (request.get_json() or {})
+    data = request.form.to_dict() if request.form else (request.get_json(silent=True) or {})
 
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
     category = (data.get("category") or "").strip()
     locality = (data.get("locality") or "").strip()
-    priority = data.get("priority", "Medium")
+    priority = (data.get("priority") or "Medium").strip()
     raw_demo = data.get("demo_short_deadline", False)
     demo_short_deadline = raw_demo in (True, "true", "True", 1, "1")
 
@@ -195,18 +197,26 @@ def create_grievance():
     raw_lon = data.get("longitude")
     raw_acc = data.get("location_accuracy_m")
 
-    if raw_lat not in (None, "", "null") and raw_lon not in (None, "", "null"):
+    has_lat = raw_lat not in (None, "", "null", "undefined")
+    has_lon = raw_lon not in (None, "", "null", "undefined")
+
+    if has_lat and not has_lon:
+        return jsonify({"error": "Longitude must be provided when latitude is specified."}), 400
+    if has_lon and not has_lat:
+        return jsonify({"error": "Latitude must be provided when longitude is specified."}), 400
+
+    if has_lat and has_lon:
         try:
             latitude = float(raw_lat)
             longitude = float(raw_lon)
             if not (-90 <= latitude <= 90):
-                return jsonify({"error": "Latitude must be between -90 and 90."}), 400
+                return jsonify({"error": "Latitude must be between -90 and 90 degrees."}), 400
             if not (-180 <= longitude <= 180):
-                return jsonify({"error": "Longitude must be between -180 and 180."}), 400
+                return jsonify({"error": "Longitude must be between -180 and 180 degrees."}), 400
         except (ValueError, TypeError):
-            return jsonify({"error": "Invalid latitude or longitude value."}), 400
+            return jsonify({"error": "Invalid latitude or longitude value. Must be valid numbers."}), 400
 
-    if raw_acc not in (None, "", "null"):
+    if raw_acc not in (None, "", "null", "undefined"):
         try:
             location_accuracy_m = float(raw_acc)
         except (ValueError, TypeError):
@@ -222,157 +232,184 @@ def create_grievance():
         return jsonify({"error": "A valid grievance category must be selected."}), 400
 
     if not locality or len(locality) < 2:
-        return jsonify({"error": "A valid locality or neighborhood landmark is required."}), 400
+        return jsonify({"error": "A valid locality or neighborhood landmark is required (at least 2 characters)."}), 400
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Look up category and department
-        cursor.execute("""
-            SELECT c.department_id, c.sla_hours, c.default_priority, d.default_sla_hours
-            FROM categories c
-            JOIN departments d ON c.department_id = d.id
-            WHERE c.name = ?
-        """, (category,))
-        cat_row = cursor.fetchone()
+    # Attachment validation (optional evidence)
+    if "attachment" in request.files:
+        att_file = request.files["attachment"]
+        if att_file and att_file.filename:
+            if not allowed_file(att_file.filename):
+                ext = att_file.filename.rsplit(".", 1)[-1].lower() if "." in att_file.filename else "unknown"
+                return jsonify({"error": f"Invalid attachment file type '.{ext}'. Allowed formats: {', '.join(sorted(ALLOWED_EXTENSIONS)).upper()}."}), 400
 
-        if cat_row:
-            dept_id = cat_row["department_id"]
-            sla_hours = cat_row["sla_hours"] or cat_row["default_sla_hours"] or 48
-            if not priority or priority not in ("Low", "Medium", "High", "Urgent"):
-                priority = cat_row["default_priority"] or "Medium"
-        else:
-            # Fallback to first department
-            cursor.execute("SELECT id, default_sla_hours FROM departments LIMIT 1")
-            d_row = cursor.fetchone()
-            dept_id = d_row["id"] if d_row else 1
-            sla_hours = 48
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Look up category and department
+            cursor.execute("""
+                SELECT c.department_id, c.sla_hours, c.default_priority, d.default_sla_hours
+                FROM categories c
+                JOIN departments d ON c.department_id = d.id
+                WHERE c.name = ?
+            """, (category,))
+            cat_row = cursor.fetchone()
 
-        # Calculate deadline (demo mode allows 30-minute deadline for instant live testing)
-        now_dt = datetime.now(timezone.utc)
-        if demo_short_deadline:
-            deadline_dt = now_dt + timedelta(minutes=15)
-        else:
-            # Priority adjustment
-            if priority == "Urgent":
-                sla_hours = max(sla_hours // 3, 12)
-            elif priority == "High":
-                sla_hours = max(int(sla_hours * 0.6), 24)
-            deadline_dt = now_dt + timedelta(hours=sla_hours)
+            if cat_row:
+                dept_id = cat_row["department_id"]
+                sla_hours = cat_row["sla_hours"] or cat_row["default_sla_hours"] or 48
+                if not priority or priority not in ("Low", "Medium", "High", "Urgent"):
+                    priority = cat_row["default_priority"] or "Medium"
+            else:
+                # Fallback to first department
+                cursor.execute("SELECT id, default_sla_hours FROM departments LIMIT 1")
+                d_row = cursor.fetchone()
+                dept_id = d_row["id"] if d_row else 1
+                sla_hours = 48
+                if not priority or priority not in ("Low", "Medium", "High", "Urgent"):
+                    priority = "Medium"
 
-        case_id = generate_case_id()
-        # Verify unique case ID
-        while True:
-            cursor.execute("SELECT id FROM grievances WHERE case_id = ?", (case_id,))
-            if not cursor.fetchone():
-                break
+            # Calculate deadline (demo mode allows 15-minute deadline for instant live testing)
+            now_dt = datetime.now(timezone.utc)
+            if demo_short_deadline:
+                deadline_dt = now_dt + timedelta(minutes=15)
+            else:
+                # Priority adjustment
+                if priority == "Urgent":
+                    sla_hours = max(sla_hours // 3, 12)
+                elif priority == "High":
+                    sla_hours = max(int(sla_hours * 0.6), 24)
+                deadline_dt = now_dt + timedelta(hours=sla_hours)
+
             case_id = generate_case_id()
+            # Verify unique case ID
+            while True:
+                cursor.execute("SELECT id FROM grievances WHERE case_id = ?", (case_id,))
+                if not cursor.fetchone():
+                    break
+                case_id = generate_case_id()
 
-        # Auto-assignment to officer in department with lowest workload
-        cursor.execute("""
-            SELECT u.id, COUNT(g.id) as active_cases
-            FROM users u
-            LEFT JOIN grievances g ON u.id = g.assigned_officer_id AND g.status NOT IN ('Resolved', 'Closed')
-            WHERE u.role = 'officer' AND u.department_id = ?
-            GROUP BY u.id
-            ORDER BY active_cases ASC
-            LIMIT 1
-        """, (dept_id,))
-        officer_match = cursor.fetchone()
-        assigned_officer_id = officer_match["id"] if officer_match else None
-        initial_status = "Acknowledged" if assigned_officer_id else "Submitted"
+            # Auto-assignment to officer in department with lowest workload
+            cursor.execute("""
+                SELECT u.id, COUNT(g.id) as active_cases
+                FROM users u
+                LEFT JOIN grievances g ON u.id = g.assigned_officer_id AND g.status NOT IN ('Resolved', 'Closed')
+                WHERE u.role = 'officer' AND u.department_id = ?
+                GROUP BY u.id
+                ORDER BY active_cases ASC
+                LIMIT 1
+            """, (dept_id,))
+            officer_match = cursor.fetchone()
+            assigned_officer_id = officer_match["id"] if officer_match else None
+            initial_status = "Acknowledged" if assigned_officer_id else "Submitted"
 
-        submission_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-        deadline_str = deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
+            submission_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+            deadline_str = deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        cursor.execute("""
-            INSERT INTO grievances (
-                case_id, title, description, category, department_id, locality,
-                citizen_id, assigned_officer_id, priority, status,
-                submission_date, target_deadline, updated_at,
+            cursor.execute("""
+                INSERT INTO grievances (
+                    case_id, title, description, category, department_id, locality,
+                    citizen_id, assigned_officer_id, priority, status,
+                    submission_date, target_deadline, updated_at,
+                    latitude, longitude, location_accuracy_m,
+                    location_source, location_confirmed, street_or_landmark
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                case_id, title, description, category, dept_id, locality,
+                user["id"], assigned_officer_id, priority, initial_status,
+                submission_str, deadline_str, submission_str,
                 latitude, longitude, location_accuracy_m,
                 location_source, location_confirmed, street_or_landmark
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            case_id, title, description, category, dept_id, locality,
-            user["id"], assigned_officer_id, priority, initial_status,
-            submission_str, deadline_str, submission_str,
-            latitude, longitude, location_accuracy_m,
-            location_source, location_confirmed, street_or_landmark
-        ))
+            ))
 
-        # Record Audit Trail
-        loc_note = f"Grievance reported in {locality}."
-        if latitude and longitude:
-            loc_note += f" GPS/Map coordinates: ({latitude:.6f}, {longitude:.6f}), source: {location_source}."
-        loc_note += f" SLA Target: {sla_hours} hours."
+            grievance_id = cursor.lastrowid
+            if not grievance_id:
+                cursor.execute("SELECT id FROM grievances WHERE case_id = ?", (case_id,))
+                id_row = cursor.fetchone()
+                grievance_id = id_row["id"] if id_row else None
 
-        record_audit(
-            conn,
-            case_id=case_id,
-            actor_id=user["id"],
-            actor_name=user["name"],
-            actor_role=user["role"],
-            action="CREATED",
-            new_value=f"Status: {initial_status}, Priority: {priority}",
-            notes=loc_note
-        )
+            # Record Audit Trail
+            loc_note = f"Grievance reported in {locality}."
+            if latitude and longitude:
+                loc_note += f" GPS/Map coordinates: ({latitude:.6f}, {longitude:.6f}), source: {location_source}."
+            loc_note += f" SLA Target: {'15 minutes (Demo Mode)' if demo_short_deadline else f'{sla_hours} hours'}."
 
-        if assigned_officer_id:
             record_audit(
                 conn,
                 case_id=case_id,
-                actor_id=None,
-                actor_name="CivicFix Auto-Router",
-                actor_role="system",
-                action="ASSIGNED",
-                new_value=f"Officer ID {assigned_officer_id}",
-                notes="Automatically assigned to departmental officer based on workload balancing."
+                actor_id=user["id"],
+                actor_name=user["name"],
+                actor_role=user["role"],
+                action="CREATED",
+                new_value=f"Status: {initial_status}, Priority: {priority}",
+                notes=loc_note
             )
-            # Notify officer
+
+            if assigned_officer_id:
+                record_audit(
+                    conn,
+                    case_id=case_id,
+                    actor_id=None,
+                    actor_name="CivicFix Auto-Router",
+                    actor_role="system",
+                    action="ASSIGNED",
+                    new_value=f"Officer ID {assigned_officer_id}",
+                    notes="Automatically assigned to departmental officer based on workload balancing."
+                )
+                # Notify officer
+                create_notification(
+                    conn,
+                    user_id=assigned_officer_id,
+                    case_id=case_id,
+                    title="New Case Assignment",
+                    message=f"You have been assigned case {case_id}: '{title}' in {locality}.",
+                    notif_type="info"
+                )
+
+            # Notify citizen
             create_notification(
                 conn,
-                user_id=assigned_officer_id,
+                user_id=user["id"],
                 case_id=case_id,
-                title="New Case Assignment",
-                message=f"You have been assigned case {case_id}: '{title}' in {locality}.",
-                notif_type="info"
+                title="Grievance Registered",
+                message=f"Your complaint has been logged under ID {case_id}. Tracking is now active.",
+                notif_type="success"
             )
 
-        # Notify citizen
-        create_notification(
-            conn,
-            user_id=user["id"],
-            case_id=case_id,
-            title="Grievance Registered",
-            message=f"Your complaint has been logged under ID {case_id}. Tracking is now active.",
-            notif_type="success"
-        )
+            # Handle optional evidence attachment if uploaded
+            if "attachment" in request.files:
+                file = request.files["attachment"]
+                if file and file.filename and allowed_file(file.filename):
+                    safe_name = secure_filename(file.filename)
+                    unique_name = f"{case_id}_{uuid.uuid4().hex[:6]}_{safe_name}"
+                    upload_folder = current_app.config.get("UPLOAD_FOLDER") or os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads"
+                    )
+                    os.makedirs(upload_folder, exist_ok=True)
+                    file_dest = os.path.join(upload_folder, unique_name)
+                    file.save(file_dest)
 
-        # Handle attachment if uploaded
-        if "attachment" in request.files:
-            file = request.files["attachment"]
-            if file and file.filename and allowed_file(file.filename):
-                safe_name = secure_filename(file.filename)
-                unique_name = f"{case_id}_{uuid.uuid4().hex[:6]}_{safe_name}"
-                upload_folder = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
-                os.makedirs(upload_folder, exist_ok=True)
-                file_dest = os.path.join(upload_folder, unique_name)
-                file.save(file_dest)
+                    file_size = os.path.getsize(file_dest)
+                    file_url = f"/uploads/{unique_name}"
+                    cursor.execute("""
+                        INSERT INTO attachments (case_id, uploader_id, file_name, file_path, file_size, mime_type, file_purpose)
+                        VALUES (?, ?, ?, ?, ?, ?, 'citizen_evidence')
+                    """, (case_id, user["id"], safe_name, file_url, file_size, file.content_type or "application/octet-stream"))
 
-                file_size = os.path.getsize(file_dest)
-                file_url = f"/uploads/{unique_name}"
-                cursor.execute("""
-                    INSERT INTO attachments (case_id, uploader_id, file_name, file_path, file_size, mime_type, file_purpose)
-                    VALUES (?, ?, ?, ?, ?, ?, 'citizen_evidence')
-                """, (case_id, user["id"], safe_name, file_url, file_size, file.content_type or "application/octet-stream"))
+        return jsonify({
+            "message": "Grievance successfully filed.",
+            "id": grievance_id,
+            "case_id": case_id,
+            "tracking_id": case_id,
+            "status": initial_status,
+            "target_deadline": deadline_str
+        }), 201
 
-    return jsonify({
-        "message": "Grievance successfully filed.",
-        "case_id": case_id,
-        "status": initial_status,
-        "target_deadline": deadline_str
-    }), 201
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception as exc:
+        current_app.logger.exception(f"Grievance creation failed: {exc}")
+        return jsonify({"error": f"Failed to register grievance: {str(exc)}"}), 500
 
 # --- 4. Support Existing Grievance (Duplicate linking) ---
 @grievances_bp.route("/<case_id>/support", methods=["POST"])
